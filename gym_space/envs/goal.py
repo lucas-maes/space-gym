@@ -27,7 +27,7 @@ class GoalEnv(SpaceshipEnv, ABC):
         ship_steering: int = 0,
         ship_moi: float = 0.01,
         max_engine_force=0.4,
-        renderer_kwargs: dict = None,
+        render_mode="rgb_array",
     ):
         self.n_planets = n_planets
         self.n_objects = self.n_planets + 2
@@ -68,7 +68,7 @@ class GoalEnv(SpaceshipEnv, ABC):
             vel_xy_std=np.ones(2),
             with_lidar=True,
             with_goal=True,
-            renderer_kwargs={"debug_mode": True},
+            render_mode=render_mode,
         )
 
     def seed(self, seed=None):
@@ -78,8 +78,8 @@ class GoalEnv(SpaceshipEnv, ABC):
 
     def _init_one_planet(self):
         self.planets_radius = 0.8
-        self.goal_radius = 0.2
-        self.ship_radius = 0.2
+        self.goal_radius = 0.1
+        self.ship_radius = 0.1
 
     def _init_many_planets(self, n_planets: int):
         self._hexagonal_tiling = HexagonalTiling(n_planets, WORLD_SIZE)
@@ -127,8 +127,6 @@ class GoalEnv(SpaceshipEnv, ABC):
             self.goal_pos = self._find_new_goal_with_one_planet()
         else:
             self.goal_pos = self._find_new_goal_with_many_planets()
-        if self._renderer is not None:
-            self._renderer.move_goal(self.goal_pos)
 
     def _reset(self):
         ship_pos, *planets_pos = self._sample_positions()

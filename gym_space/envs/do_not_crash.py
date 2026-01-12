@@ -12,12 +12,12 @@ class DoNotCrashEnv(SpaceshipEnv, ABC):
     _planet_radius = 0.25
     _border_radius = 1.0
 
-    def __init__(self):
+    def __init__(self, render_mode="rgb_array"):
         planet = Planet(center_pos=np.zeros(2), mass=6e8, radius=self._planet_radius)
         # here we use planet outline as external border, i.e. we fly "inside planet"
         border = Planet(center_pos=np.zeros(2), mass=0.0, radius=self._border_radius)
         ship = ShipParams(
-            mass=1, moi=0.05, max_engine_force=0.3, max_thruster_force=0.05
+            steering=1, mass=1, moi=0.05, max_engine_force=0.3, max_thruster_force=0.05
         )
 
         super().__init__(
@@ -29,6 +29,7 @@ class DoNotCrashEnv(SpaceshipEnv, ABC):
             vel_xy_std=np.ones(2),
             with_lidar=False,
             with_goal=False,
+            render_mode=render_mode,
         )
 
     def _reset(self):

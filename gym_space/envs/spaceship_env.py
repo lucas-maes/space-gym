@@ -1,14 +1,33 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
-import gym
-from gym.spaces import Discrete, Box
+import gymnasium as gym
+from gymnasium.spaces import Discrete, Box
+from gymnasium.error import DependencyNotInstalled
 from gym_space.planet import Planet
 from gym_space.ship_params import ShipParams, Steering
 from gym_space.helpers import angle_to_unit_vector, vector_to_angle
 import numpy as np
 
 from gym_space.dynamic_model import ShipState, ship_vector_field
+
+import math
+
+MAX_SCREEN_SIZE = 600
+SHIP_BODY_RADIUS = 15
+
+
+def rotate_point(px, py, ang):
+    c, s = math.cos(ang), math.sin(ang)
+    return (px * c - py * s, px * s + py * c)
+
+def transform_point(p, x, y, ang):
+    rx, ry = rotate_point(p[0], p[1], ang)
+    return (x + rx, y + ry)
+
+def transform_points(points, x, y, ang):
+    return [transform_point(p, x, y, ang) for p in points]
 
 
 @dataclass
@@ -24,8 +43,13 @@ class SpaceshipEnv(gym.Env, ABC):
         vel_xy_std: approximate standard deviation of translational velocities
         with_lidar: include "lidars" for planets and goal (if present) in observations
         with_goal: if goal (point in space) is present in the environment
-        renderer_kwargs: keyword args for Renderer
     """
+
+
+    metadata = {
+        "render_modes": ["human", "rgb_array"],
+        "render_fps": 30,
+    }
 
     ship_params: ShipParams
     planets: list[Planet]
@@ -35,35 +59,36 @@ class SpaceshipEnv(gym.Env, ABC):
     vel_xy_std: np.array
     with_lidar: bool
     with_goal: bool
-    renderer_kwargs: dict = None
 
     observation: np.array = field(init=False, default=None)
     last_action: np.array = field(init=False, default=None)
     last_xy: np.array = field(init=False, default=None)
     goal_pos: np.array = field(init=False, default=None)
 
-    metadata = {
-        "render.modes": ["human", "rgb_array"],
-        "video.frames_per_second": 30,
-    }
+    prev_ship_pos: deque = field(init=False, default=deque(maxlen=30))
+    prev_pos_color_decay: float = field(init=False, default=0.85)
+    render_mode: str = field(init=True, default="rgb_array")
 
     def __post_init__(self):
-        if self.renderer_kwargs is None:
-            self.renderer_kwargs = dict()
         self._init_observation_space()
         self._init_action_space()
-        self._np_random = self._renderer = None
+        self._np_random = None
         self.seed()
         self._ship_state = ShipState(self.ship_params, self.planets, self.world_size, self.max_abs_vel_angle)
+        self.world_translation = np.full(2, -self.world_size / 2)
+        self.world_scale = MAX_SCREEN_SIZE  / self.world_size
+        self.screen_size = self.world_scale * self.world_size    
+        
+        self.screen = None
+        self.clock = None
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         self._reset()
         assert self._ship_state.is_defined
         assert self.with_goal == (self.goal_pos is not None)
         self._make_observation()
-        if self._renderer is not None:
-            self._renderer.reset(self.goal_pos)
-        return self.observation
+        self.prev_ship_pos.clear()
+        return self.observation, {}
 
     def step(self, raw_action):
         if isinstance(self.action_space, Box):
@@ -75,19 +100,154 @@ class SpaceshipEnv(gym.Env, ABC):
         done = self._ship_state.step(action, self.step_size)
         self._make_observation()
         reward = self._reward()
-        return self.observation, reward, done, {}
+        return self.observation, reward, done, False, {}
 
     def render(self, mode="human"):
-        if self._renderer is None:
-            from gym_space.rendering import Renderer
 
-            self._renderer = Renderer(
-                self.planets, self.world_size, self.goal_pos, **self.renderer_kwargs
+        try:
+            import pygame
+            from pygame import gfxdraw
+        except ImportError as e:
+            raise DependencyNotInstalled(
+                'pygame is not installed, run `pip install "gymnasium[classic_control]"`'
+            ) from e
+
+
+        if self.screen is None:
+            pygame.init()
+
+            if self.render_mode == "human":
+                self.screen = pygame.display.set_mode((self.screen_size, self.screen_size))
+            else: # mode in "rgb_array"
+                self.screen = pygame.Surface((self.screen_size, self.screen_size))
+
+
+        if self.clock is None:
+            self.clock = pygame.time.Clock()
+
+        self.surf = pygame.Surface((self.screen_size, self.screen_size))
+        self.surf.fill((255, 251, 238))
+
+        #### draw planets
+        for planet in self.planets:
+            x, y = self._world_to_screen(planet.center_pos)
+            gfxdraw.filled_circle(self.surf, int(x), int(y), int(planet.radius * self.world_scale), (255, 249, 227))
+            gfxdraw.aacircle(self.surf, int(x), int(y), int(planet.radius * self.world_scale), (138, 136, 128))
+
+        #### draw ship
+        # TODO DRAW and rotate everything with ship angle
+        ship_screen_position = self._world_to_screen(self._ship_state.full_pos[:2])
+        self.prev_ship_pos.append(ship_screen_position)
+
+        x, y = ship_screen_position
+        angle = self._ship_state.pos_angle
+
+        #### draw ship trace
+        opacity = 1.0
+        for i in range(1, len(self.prev_ship_pos)):
+            p0 = self.prev_ship_pos[-i]
+            p1 = self.prev_ship_pos[-i - 1]
+            a = max(0, min(255, int(opacity * 255)))
+            color = (*(255, 100, 80), a)
+
+            pygame.draw.line(self.surf, color, p0, p1, 1)
+
+            opacity *= self.prev_pos_color_decay
+            if a == 0:
+                break
+
+        # engine (local)
+        engine_edge_length = SHIP_BODY_RADIUS * 1.7
+        engine_width_angle = np.pi / 4
+        engine_left_bottom_angle = -engine_width_angle / 2
+        engine_right_bottom_angle = engine_width_angle / 2
+        engine_left_bottom_pos = engine_edge_length * angle_to_unit_vector(engine_left_bottom_angle)
+        engine_right_bottom_pos = engine_edge_length * angle_to_unit_vector(engine_right_bottom_angle)
+        engine_poly_local = [
+            (0.0, 0.0),
+            (float(engine_left_bottom_pos[0]), float(engine_left_bottom_pos[1])),
+            (float(engine_right_bottom_pos[0]), float(engine_right_bottom_pos[1])),
+        ]
+        # transform to screen
+        engine_poly_world = transform_points(engine_poly_local, x, y, angle)
+        engine_poly_world_int = [(int(px), int(py)) for px, py in engine_poly_world]
+        gfxdraw.filled_polygon(self.surf, engine_poly_world_int, (138, 136, 128))
+
+
+
+        # ship body
+        gfxdraw.filled_circle(
+            self.surf,
+            int(x), int(y),
+            int(SHIP_BODY_RADIUS),
+            (255, 251, 238)
+        )
+
+        # ship body outline
+        gfxdraw.aacircle(
+            self.surf,
+            int(x), int(y),
+            int(SHIP_BODY_RADIUS),
+            (138, 136, 128)
+        )
+
+        # ship middle
+        gfxdraw.pixel(
+            self.surf,
+            int(x), int(y),
+            (138, 136, 128)
+        )
+
+
+        # draw exhaust
+        engine_width_angle = np.pi / 4
+        exhaust_begin_radius = SHIP_BODY_RADIUS * 1.9
+        exhaust_end_radius = SHIP_BODY_RADIUS * 2.2
+
+        for flame_angle in np.linspace(-engine_width_angle / 4, engine_width_angle / 4, 3):
+            vec = angle_to_unit_vector(flame_angle)
+
+            p0_local = (float(exhaust_begin_radius * vec[0]), float(exhaust_begin_radius * vec[1]))
+            p1_local = (float(exhaust_end_radius * vec[0]), float(exhaust_end_radius * vec[1]))
+
+            p0 = transform_point(p0_local, x, y, angle)
+            p1 = transform_point(p1_local, x, y, angle)
+
+            gfxdraw.line(
+                self.surf,
+                int(p0[0]), int(p0[1]),
+                int(p1[0]), int(p1[1]),
+                (138, 136, 128)
             )
 
-        return self._renderer.render(
-            self._ship_state.full_pos, self.last_action, self.goal_lidar, self.planets_lidars, mode
-        )
+        #### draw goal
+        if self.goal_pos is not None:
+            x, y = (int(p) for p in self._world_to_screen(self.goal_pos))
+            gfxdraw.line(
+                self.surf,
+                x + 10, y + 10, x - 10, y - 10,
+                (34, 46, 80)
+            )
+            gfxdraw.line(
+                self.surf,
+                x + 10, y - 10, x - 10, y + 10,
+                (34, 46, 80)
+            )
+
+        self.surf = pygame.transform.flip(self.surf, False, True)
+        self.screen.blit(self.surf, (0, 0))
+        if self.render_mode == "human":
+            pygame.event.pump()
+            self.clock.tick(self.metadata["render_fps"])
+            pygame.display.flip()
+
+        elif self.render_mode == "rgb_array":
+            return np.transpose(
+                np.array(pygame.surfarray.pixels3d(self.screen)), axes=(1, 0, 2)
+            )
+
+    def _world_to_screen(self, world_pos: np.array):
+        return self.world_scale * (world_pos - self.world_translation)
 
     def seed(self, seed=None):
         self._np_random, seed = gym.utils.seeding.np_random(seed)
@@ -154,10 +314,6 @@ class SpaceshipEnv(gym.Env, ABC):
         if not (self.with_lidar and self.with_goal):
             return None
         return self.observation[-2:]
-
-    @property
-    def viewer(self):
-        return self._renderer.viewer
 
     @abstractmethod
     def _init_action_space(self):

@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Union
-import gym
+import gymnasium as gym
 import warnings
 
 from gym_space import helpers
@@ -84,7 +84,7 @@ class HexagonalTiling:
                 (0, 1, 2),
                 (3, 1, 2),
             ]
-            tiles_nrs = np.array(diagonal_cases[self._np_random.randint(4)])
+            tiles_nrs = np.array(diagonal_cases[self._np_random.integers(4)])
         else:
             tiles_nrs = self._np_random.choice(self._n_tiles, size=self.n_objects - 1, replace=False)
         self._ship_tile_nr = tiles_nrs[0]

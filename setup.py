@@ -8,7 +8,7 @@ long_description = Path("README.md").read_text()
 
 setup(
     name="gym_space",
-    version="0.1",
+    version="0.2",
     author="Kajetan Janiak",
     author_email="kajetan.janiak@gmail.com",
     description="RL environments with locomotion tasks in space",

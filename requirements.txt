@@ -1,4 +1,4 @@
-gym
+gymnasium
 numpy
 scipy
-torch
+pygame

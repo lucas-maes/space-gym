@@ -8,7 +8,7 @@ from gym_space.helpers import (
     angle_to_unit_vector,
 )
 from gym_space.planet import Planet
-from gym.spaces import Box
+from gymnasium.spaces import Box
 from gym_space.ship_params import ShipParams, Steering
 from .spaceship_env import SpaceshipEnv, DiscreteSpaceshipEnv, ContinuousSpaceshipEnv
 
@@ -200,6 +200,7 @@ class KeplerEnv(SpaceshipEnv, ABC):
         ship_steering: int = 0,
         ship_moi: float = 0.01,
         max_engine_force=0.4,
+        render_mode="rgb_array",
     ):
         planet = Planet(center_pos=np.zeros(2), mass=6e8, radius=self._planet_radius)
         # here we use planet outline as external border, i.e. we fly "inside planet"
@@ -219,8 +220,12 @@ class KeplerEnv(SpaceshipEnv, ABC):
             vel_xy_std=np.ones(2),
             with_lidar=False,
             with_goal=False,
-            renderer_kwargs={"num_prev_pos_vis": 75, "prev_pos_color_decay": 0.95, "debug_mode": False},
+            render_mode=render_mode
         )
+
+        self.num_prev_pos_vis = 75
+        self.prev_pos_color_decay = 0.95
+
         self.ref_orbit_a = ref_orbit_a
         self.reward_value = reward_value
         self.ref_orbit_eccentricity = ref_orbit_eccentricity
